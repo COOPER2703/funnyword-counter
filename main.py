@@ -12,9 +12,24 @@ import discord
 from discord.ext import commands
 from discord.ext import voice_recv
 from vosk import KaldiRecognizer, Model, SetLogLevel
+from discord import opus
 
 
 dotenv.load_dotenv(".env")
+
+# Defensive decode to avoid crashing on occasional corrupted Opus frames.
+if opus.is_loaded():
+    _orig_decode = opus.Decoder.decode
+
+    def _safe_decode(self, data, *, fec=False):
+        try:
+            return _orig_decode(self, data, fec=fec)
+        except opus.OpusError:
+            samples = getattr(self, "_samples_per_frame", 960)
+            channels = getattr(self, "_channels", 2)
+            return b"\x00" * (samples * channels * 2)
+
+    opus.Decoder.decode = _safe_decode
 
 def chunk_lines(lines: Iterable[str], max_len: int = 1900) -> list[str]:
     chunks: list[str] = []
@@ -56,7 +71,7 @@ if not os.path.isdir(VOSK_MODEL_PATH):
 if (not os.path.exists("./data/db.sql")):
     f = open("./data/db.sql", "w")
     f.close()
-
+    os.chmod("./data/db.sql", 7, 7, 7)
 
 db_lock = threading.Lock()
 db_conn = sqlite3.connect("./data/db.sql", check_same_thread=False)
@@ -117,23 +132,27 @@ def save_hit_to_db(user_id: int, user_name: str, keyword: str) -> None:
         db_conn.commit()
 
 
-class Transcriber(threading.Thread):
+class Transcriber:
     def __init__(self, keyword_set: set[str], model: Model) -> None:
-        super().__init__(daemon=True)
         self.keyword_set = keyword_set
         self.model = model
-        self.q: "queue.Queue[tuple[int, str, bytes]]" = queue.Queue()
-        self.recognizers: dict[int, KaldiRecognizer] = {}
-        self.resample_state: dict[int, object] = {}
+        self.workers: dict[int, UserWorker] = {}
+        self.workers_lock = threading.Lock()
         self.last_hit: dict[tuple[int, str], float] = {}
-
-        self.sample_rate = 16000
-        self.sample_width = 2
+        self.last_hit_lock = threading.Lock()
 
     def submit(self, user_id: int, user_name: str, pcm: bytes) -> None:
-        self.q.put((user_id, user_name, pcm))
+        worker = self.workers.get(user_id)
+        if worker is None:
+            with self.workers_lock:
+                worker = self.workers.get(user_id)
+                if worker is None:
+                    worker = UserWorker(user_id, self, self.model)
+                    self.workers[user_id] = worker
+                    worker.start()
+        worker.submit(user_name, pcm)
 
-    def _check_keywords(self, user_id: int, user_name: str, text: str) -> None:
+    def check_keywords(self, user_id: int, user_name: str, text: str) -> None:
         if not text:
             return
         text = text.lower()
@@ -141,44 +160,52 @@ class Transcriber(threading.Thread):
         for kw in self.keyword_set:
             if kw and kw in text:
                 key = (user_id, kw)
-                if now - self.last_hit.get(key, 0.0) < 2.0:
-                    continue
-                self.last_hit[key] = now
+                with self.last_hit_lock:
+                    if now - self.last_hit.get(key, 0.0) < 2.0:
+                        continue
+                    self.last_hit[key] = now
                 with keyword_lock:
                     user_names[user_id] = user_name
                     keyword_counts[key] = keyword_counts.get(key, 0) + 1
                 save_hit_to_db(user_id, user_name, kw)
                 print(f"[VOICE] {user_name}: mot-clé détecté -> {kw} | texte: {text}")
 
+
+class UserWorker(threading.Thread):
+    def __init__(self, user_id: int, manager: Transcriber, model: Model) -> None:
+        super().__init__(daemon=True)
+        self.user_id = user_id
+        self.manager = manager
+        self.model = model
+        self.q: "queue.Queue[tuple[str, bytes]]" = queue.Queue()
+        self.resample_state: object | None = None
+        self.recognizer = KaldiRecognizer(self.model, 16000)
+
+    def submit(self, user_name: str, pcm: bytes) -> None:
+        self.q.put((user_name, pcm))
+
     def run(self) -> None:
         while True:
-            user_id, user_name, pcm = self.q.get()
+            user_name, pcm = self.q.get()
             if not pcm:
                 continue
 
             mono = audioop.tomono(pcm, 2, 0.5, 0.5)
-            state = self.resample_state.get(user_id)
-            data_16k, new_state = audioop.ratecv(mono, 2, 1, 48000, self.sample_rate, state)
-            self.resample_state[user_id] = new_state
+            data_16k, new_state = audioop.ratecv(mono, 2, 1, 48000, 16000, self.resample_state)
+            self.resample_state = new_state
 
-            rec = self.recognizers.get(user_id)
-            if rec is None:
-                rec = KaldiRecognizer(self.model, self.sample_rate)
-                self.recognizers[user_id] = rec
-
-            if rec.AcceptWaveform(data_16k):
-                result = json.loads(rec.Result())
-                self._check_keywords(user_id, user_name, result.get("text", ""))
+            if self.recognizer.AcceptWaveform(data_16k):
+                result = json.loads(self.recognizer.Result())
+                self.manager.check_keywords(self.user_id, user_name, result.get("text", ""))
             else:
-                partial = json.loads(rec.PartialResult()).get("partial", "")
-                self._check_keywords(user_id, user_name, partial)
+                partial = json.loads(self.recognizer.PartialResult()).get("partial", "")
+                self.manager.check_keywords(self.user_id, user_name, partial)
 
 
 SetLogLevel(-1)
 _model = Model(VOSK_MODEL_PATH)
 load_counts_from_db()
 _transcriber = Transcriber(KEYWORDS, _model)
-_transcriber.start()
 
 
 def channel_has_nonbot(channel: discord.VoiceChannel | discord.StageChannel) -> bool:
