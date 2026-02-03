@@ -1,0 +1,11 @@
+services:
+  discord-bot:
+    build: .
+    env_file:
+      - .env
+    environment:
+      VOSK_MODEL_PATH: /app/model
+    volumes:
+      - ./data:/app/data
+      - ./vosk-model:/app/model:ro
+    restart: unless-stopped
