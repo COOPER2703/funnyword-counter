@@ -23,7 +23,11 @@ class MultiUserSink(AudioSink):
       self.workers[user.id] = worker
       worker.start()
 
-    self.workers[user.id].queue.put(data.pcm)
+    try:
+      self.workers[user.id].queue.put(data.pcm)
+    except Exception as e:
+        print(f"[AUDIO] Erreur audio ignorée pour {user}: {e}")
+
 
   def cleanup(self):
     for worker in self.workers.values():

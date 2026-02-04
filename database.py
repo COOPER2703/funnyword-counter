@@ -6,7 +6,8 @@ from models.keyword_count import KeywordCount
 class Database:
 
   def __init__(self):
-    os.makedirs("./data", exist_ok=True)
+    if (not os.path.exists('./data')):
+      os.mkdir("./data", 711)
     self.conn = sqlite3.connect("./data/db.sql", check_same_thread=False)
     self.create_database()
 

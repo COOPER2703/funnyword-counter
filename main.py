@@ -11,6 +11,19 @@ from utils import chunk_lines
 from database import Database
 from bot import Bot
 
+import discord.opus
+
+_original_decode = discord.opus.Decoder.decode
+
+def safe_decode(self, data, *, fec=False): # type: ignore
+    try:
+        return _original_decode(self, data, fec=True) # type: ignore
+    except discord.opus.OpusError:
+        return b''
+
+discord.opus.Decoder.decode = safe_decode
+
+
 dotenv.load_dotenv(".env")
 
 bot = Bot()

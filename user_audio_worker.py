@@ -40,6 +40,9 @@ class UserAudioWorker(Thread):
 
 
     def process_audio(self, data: bytes):
+        if (not data):
+            return
+
         audio16k = self.process_48_to_16K_audio(data)
 
         self.recognizer.AcceptWaveform(audio16k) # type: ignore
