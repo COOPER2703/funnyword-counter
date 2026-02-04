@@ -23,10 +23,10 @@ class Database:
       keyword_counts.append(current)
     return keyword_counts
 
-  def addKeyword(self, discord_id: int):
+  def addKeyword(self, discord_id: int, addCount: int):
     request = self.conn.execute(GET_KEYWORD_COUNT_REQUEST, (discord_id,)) # type: ignore
     if (request.fetchone() is None):
-      self.conn.execute(CREATE_KEYWORD_COUNT_REQUEST, (discord_id,))  # type: ignore
-      self.conn.commit()
+      self.conn.execute(CREATE_KEYWORD_COUNT_REQUEST, (discord_id,addCount))  # type: ignore
     else:
-      self.conn.execute(INCREMENT_KEYWORD_COUNT_REQUEST, (discord_id,)) # type: ignore
+      self.conn.execute(INCREMENT_KEYWORD_COUNT_REQUEST, (addCount,discord_id)) # type: ignore
+    self.conn.commit()

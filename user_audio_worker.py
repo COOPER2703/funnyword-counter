@@ -6,6 +6,7 @@ import numpy as np
 from vosk import Model, KaldiRecognizer # type: ignore
 from scipy.signal import resample_poly # type: ignore
 from database import Database
+import re
 
 from constants.environment import KEYWORD
 
@@ -45,14 +46,15 @@ class UserAudioWorker(Thread):
 
         audio16k = self.process_48_to_16K_audio(data)
 
-        self.recognizer.AcceptWaveform(audio16k) # type: ignore
-
-        partial = json.loads(self.recognizer.PartialResult()) # type: ignore
-        text = partial.get("partial", "")
-
-        if text:
-            if KEYWORD in text:
-                self.database.addKeyword(int(self.user.id))
+        if self.recognizer.AcceptWaveform(audio16k): # type: ignore
+            result = json.loads(self.recognizer.Result()) # type: ignore
+            text = result["text"].lower().strip()  # FINAL seulement
+            if not text:
+                return
+            count = len(re.findall(KEYWORD, text))
+            print(f"User: {self.user.name} tell: {text}, nb: {count}" )
+            if (count > 0):
+                self.database.addKeyword(int(self.user.id), count)
             self.recognizer.Reset()
 
     def stop(self):

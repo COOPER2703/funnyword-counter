@@ -21,11 +21,11 @@ GET_KEYWORD_COUNT_REQUEST = """
 
 CREATE_KEYWORD_COUNT_REQUEST = """
   INSERT INTO keyword_counts
-  VALUES (?, 1);
+  VALUES (?, ?);
 """
 
 INCREMENT_KEYWORD_COUNT_REQUEST = """
   UPDATE keyword_counts
-  SET count = count + 1
+  SET count = count + ?
   WHERE discord_id = ?;
 """
